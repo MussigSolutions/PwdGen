@@ -1,4 +1,4 @@
-﻿# Secure Offline Passphrase Generator (PowerShell + WPF, no external modules)
+# Secure Offline Passphrase Generator (PowerShell + WPF, no external modules)
 # Notes:
 # - Uses cryptographically secure RNG
 # - Avoids modulo bias via rejection sampling
@@ -113,6 +113,77 @@ function Get-EntropyEstimateBits {
   return [Math]::Round($bits, 1)
 }
 
+function Show-TextPrompt {
+  param(
+    [Parameter(Mandatory)][string]$Title,
+    [Parameter(Mandatory)][string]$Message,
+    [string]$Default = "",
+    [System.Windows.Window]$Owner = $null
+  )
+
+  $promptXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="$Title"
+        Height="175"
+        Width="540"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#1F1F23">
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <TextBlock Grid.Row="0" Text="$Message" Foreground="#EAEAEA" TextWrapping="Wrap" Margin="0,0,0,10"/>
+    <TextBox x:Name="Txt" Grid.Row="1" Height="28" Background="#2B2B31" Foreground="#EAEAEA" BorderThickness="0" Padding="8"/>
+
+    <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="False">
+      <Button x:Name="BtnCancel" Content="Cancel" Width="110" Height="30"
+              Background="#2B2B31" Foreground="#EAEAEA" BorderThickness="0"
+              DockPanel.Dock="Right" />
+      <Button x:Name="BtnOk" Content="OK" Width="110" Height="30" Margin="10,0,0,0"
+              Background="#10B981" Foreground="White" BorderThickness="0"
+              DockPanel.Dock="Right" />
+    </DockPanel>
+  </Grid>
+</Window>
+"@
+
+  [xml]$px = $promptXaml
+  $reader = New-Object System.Xml.XmlNodeReader $px
+  $w = [Windows.Markup.XamlReader]::Load($reader)
+
+  if ($Owner) { $w.Owner = $Owner }
+
+  $txt = $w.FindName("Txt")
+  $txt.Text = $Default
+
+  $ok  = $w.FindName("BtnOk")
+  $can = $w.FindName("BtnCancel")
+
+  # Use Window.Tag to carry the result back out of ShowDialog()
+  $w.Tag = $null
+
+  $ok.Add_Click({
+    $w.Tag = $txt.Text
+    $w.DialogResult = $true
+    $w.Close()
+  })
+
+  $can.Add_Click({
+    $w.Tag = $null
+    $w.DialogResult = $false
+    $w.Close()
+  })
+
+  $null = $w.ShowDialog()
+  return $w.Tag
+}
+
+
 # -------------------------
 # WPF UI
 # -------------------------
@@ -139,6 +210,8 @@ $LblStatus = $Window.FindName("LblStatus")
 $ChkNums       = $Window.FindName("ChkNums")
 $CmbSep        = $Window.FindName("CmbSep")
 $CmbCaps       = $Window.FindName("CmbCaps")
+$BtnSetADPassword = $Window.FindName("BtnSetADPassword")
+
 
 
 function Get-SelectedSeparator {
@@ -155,6 +228,7 @@ function Get-SelectedSeparator {
     default { "" }
   }
 }
+
 
 function Expand-GzipBase64Utf8 {
   param([Parameter(Mandatory)][string]$Base64Gzip)
@@ -182,6 +256,91 @@ $wordText = Expand-GzipBase64Utf8 -Base64Gzip $WordListGzipB64
 # Expect one word per line
 $WordList = $wordText -split "`r?`n" | Where-Object { $_ -and $_.Trim() -ne "" } | ForEach-Object { $_.Trim().ToLowerInvariant() }
 
+function Show-UserPicker {
+  param(
+    [Parameter(Mandatory)][string]$Query,
+    [Parameter(Mandatory)][object[]]$Users
+  )
+
+  $pickerPath = Join-Path $PSScriptRoot 'UserPicker.xaml'
+  if (-not (Test-Path $pickerPath)) { throw "Missing picker XAML: $pickerPath" }
+
+  [xml]$x = Get-Content -LiteralPath $pickerPath -Raw
+  $r = New-Object System.Xml.XmlNodeReader $x
+  $w = [Windows.Markup.XamlReader]::Load($r)
+
+  $w.Owner = $Window
+
+  $lblQuery = $w.FindName("LblQuery")
+  $lst      = $w.FindName("LstUsers")
+  $btnSel   = $w.FindName("BtnSelect")
+  $btnCan   = $w.FindName("BtnCancel")
+  $lblStat  = $w.FindName("LblPickStatus")
+
+  $lblQuery.Text = "Query: $Query"
+  $lst.ItemsSource = $Users
+
+  $selected = $null
+
+  $btnSel.Add_Click({
+    $sel = $lst.SelectedItem
+    if ($null -eq $sel) {
+      $lblStat.Text = "Select a user from the list."
+      return
+    }
+    $script:selected = $sel
+    $w.DialogResult = $true
+    $w.Close()
+  })
+
+  $btnCan.Add_Click({
+    $script:selected = $null
+    $w.DialogResult = $false
+    $w.Close()
+  })
+
+  $null = $w.ShowDialog()
+  return $selected
+}
+
+function Search-ADUsers {
+  param(
+    [Parameter(Mandatory)][string]$Query
+  )
+
+  # Escape single quotes for the -Filter string
+  $q = $Query.Replace("'", "''")
+
+  # Build a single-line filter (avoids newline parsing issues)
+  $filter = "(SamAccountName -like '*$q*') -or (Name -like '*$q*') -or (DisplayName -like '*$q*')"
+
+  # Execute search
+  $users = Get-ADUser -Filter $filter -Properties DisplayName, UserPrincipalName, DistinguishedName
+
+  # Return projection for the picker
+  foreach ($u in $users) {
+    $displayName = if ([string]::IsNullOrWhiteSpace($u.DisplayName)) { "<no displayName>" } else { $u.DisplayName }
+    $upn = if ([string]::IsNullOrWhiteSpace($u.UserPrincipalName)) { "" } else { $u.UserPrincipalName }
+
+    [pscustomobject]@{
+      SamAccountName    = $u.SamAccountName
+      DisplayName       = $u.DisplayName
+      UserPrincipalName = $u.UserPrincipalName
+      DistinguishedName = $u.DistinguishedName
+      DisplayLine       = ("{0}  ({1})  {2}" -f $displayName, $u.SamAccountName, $upn)
+    }
+  }
+}
+
+function Reset-ADUserPassword {
+  param(
+    [Parameter(Mandatory)][string]$SamAccountName,
+    [Parameter(Mandatory)][string]$NewPassword
+  )
+
+  $secure = ConvertTo-SecureString -String $NewPassword -AsPlainText -Force
+  Set-ADAccountPassword -Identity $SamAccountName -Reset -NewPassword $secure -ErrorAction wait
+}
 
 
 function Get-CapsMode {
@@ -219,6 +378,56 @@ $BtnCopy.Add_Click({
     $LblStatus.Text = "Copied to clipboard"
   }
 })
+
+$BtnSetADPassword.Add_Click({
+
+  $pass = $TxtPassphrase.Text
+  if ([string]::IsNullOrWhiteSpace($pass)) {
+    [System.Windows.MessageBox]::Show("Generate a passphrase first.", "No passphrase", "OK", "Warning") | Out-Null
+    return
+  }
+
+    $query = Show-TextPrompt -Title "Find AD user" -Message "Enter sAMAccountName (or part of name) to search:" -Owner $Window
+    if ([string]::IsNullOrWhiteSpace($query)) { [System.Windows.MessageBox]::Show("AD search failed.`n`n No user input detected", "Error", "OK", "Error") | Out-Null
+    return
+     }
+
+  try {
+    $matches = Search-ADUsers -Query $query
+  } catch {
+    [System.Windows.MessageBox]::Show("AD search failed.`n`n$($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+    return
+  }
+
+  if (-not $matches -or $matches.Count -eq 0) {
+    [System.Windows.MessageBox]::Show("No users found for: $query", "No results", "OK", "Information") | Out-Null
+    return
+  }
+
+  $selected = Show-UserPicker -Query $query -Users $matches
+  if ($null -eq $selected) { return }
+
+  $confirmMsg = @"
+You are about to reset the password for:
+
+Display Name: $($selected.DisplayName)
+sAMAccountName: $($selected.SamAccountName)
+UPN: $($selected.UserPrincipalName)
+
+Proceed?
+"@
+
+  $res = [System.Windows.MessageBox]::Show($confirmMsg, "Confirm password reset", "YesNo", "Warning")
+  if ($res -ne "Yes") { return }
+
+  try {
+    Reset-ADUserPassword -SamAccountName $selected.SamAccountName -NewPassword $pass
+    [System.Windows.MessageBox]::Show("Password updated for $($selected.SamAccountName).", "Success", "OK", "Information") | Out-Null
+  } catch {
+    [System.Windows.MessageBox]::Show("Failed to set password.`n`n$($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+  }
+})
+
 
 $SldWords.Add_ValueChanged({ Refresh-UI })
 $CmbSep.Add_SelectionChanged({ Refresh-UI })
