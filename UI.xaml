@@ -1,4 +1,4 @@
-﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Offline Passphrase Generator"
         Height="280"
@@ -213,25 +213,31 @@
             </StackPanel>
 
             <DockPanel Grid.Column="2" VerticalAlignment="Bottom">
-                <Button Name="BtnGenerate"
-                Content="Generate"
-                Height="34"
-                Width="90"
-                Background="#10B981"
-                Foreground="White"
-                BorderThickness="0"/>
                 <Button x:Name="BtnCopy"
                     Content="Copy"
                     DockPanel.Dock="Right"
                     Background="#3B82F6"
                     Foreground="White"
-                    BorderThickness="0" Width="90"/>
+                    BorderThickness="0" Width="65"/>
+                
+                <Button Name="BtnSetADPassword"
+          Content="Set AD Password"
+          Height="34"
+          Width="100"
+          Background="#3B82F6"
+          Foreground="White"
+          BorderThickness="0"/>
             </DockPanel>
         </Grid>
         <TextBlock x:Name="LblStatus"
             Foreground="#BDBDBD"
             Margin="468,43,10,0"
             VerticalAlignment="Top" Grid.Row="2"/>
+        <Button x:Name="BtnGenerate"
+                Content="Generate"
+                Background="#10B981"
+                Foreground="White"
+                BorderThickness="0" Margin="478,2,20,2"/>
         <!-- Footer -->
     </Grid>
 </Window>
